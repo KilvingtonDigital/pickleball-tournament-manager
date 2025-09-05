@@ -1,0 +1,6 @@
+SmashBoard
+
+EmailJS -
+Service ID - service_7c3umkg
+Template ID - template_g772hi6
+Public Key - 6sKFOLZBoZNoeSSw0
