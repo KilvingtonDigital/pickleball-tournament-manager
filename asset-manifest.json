@@ -1,15 +1,15 @@
 {
   "files": {
-    "main.css": "/pickleball-tournament-manager/static/css/main.e7177402.css",
-    "main.js": "/pickleball-tournament-manager/static/js/main.118ab4c3.js",
+    "main.css": "/pickleball-tournament-manager/static/css/main.784d0c36.css",
+    "main.js": "/pickleball-tournament-manager/static/js/main.62201d90.js",
     "static/js/453.2595631f.chunk.js": "/pickleball-tournament-manager/static/js/453.2595631f.chunk.js",
     "index.html": "/pickleball-tournament-manager/index.html",
-    "main.e7177402.css.map": "/pickleball-tournament-manager/static/css/main.e7177402.css.map",
-    "main.118ab4c3.js.map": "/pickleball-tournament-manager/static/js/main.118ab4c3.js.map",
+    "main.784d0c36.css.map": "/pickleball-tournament-manager/static/css/main.784d0c36.css.map",
+    "main.62201d90.js.map": "/pickleball-tournament-manager/static/js/main.62201d90.js.map",
     "453.2595631f.chunk.js.map": "/pickleball-tournament-manager/static/js/453.2595631f.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.e7177402.css",
-    "static/js/main.118ab4c3.js"
+    "static/css/main.784d0c36.css",
+    "static/js/main.62201d90.js"
   ]
 }
