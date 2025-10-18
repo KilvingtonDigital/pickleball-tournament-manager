@@ -1,10 +1,7 @@
-{m.skillLevel && (
-                          <span className={`px-2 py-0.5 rounded text-xs ${
-                            m.skillLevel === 'Beginner' ? 'bg-red-100 text-red-700' :
-                            m.skillLevel === 'Advanced Beginner' ? 'bg-orange-100 text-orange-700' :
-                            m.skillLevel === 'Intermediate' ? 'bg-yellow-100 text-yellow-700' :
-                            m.skillimport React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import InstallPrompt from './InstallPrompt';
+
+// Version 3.0 - Complete rewrite with dynamic player management
 
 /* =====================  BRAND UI PRIMITIVES  ===================== */
 const Button = ({ className = '', ...props }) => (
@@ -27,7 +24,6 @@ const Field = ({ label, children, hint }) => (
 /* =====================  HELPERS  ===================== */
 const uid = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const avg = (t) => (t[0].rating + t[1].rating) / 2;
-const teamKey = (team) => [team[0].id, team[1].id].sort().join('__');
 
 /* ---- Build export payload ---- */
 const buildResults = (players, rounds, meta) => {
@@ -128,19 +124,22 @@ const getPlayerSkillLevel = (rating) => {
       return { key, ...level };
     }
   }
-  return SKILL_LEVELS.BEGINNER; // fallback
+  return { key: 'BEGINNER', ...SKILL_LEVELS.BEGINNER };
 };
 
 const separatePlayersBySkill = (players, minPlayersPerLevel = 4) => {
-  // Group players by skill level
+  // Initialize all skill groups
   const skillGroups = {};
   Object.keys(SKILL_LEVELS).forEach(key => {
     skillGroups[key] = [];
   });
 
+  // Distribute players into skill groups
   players.forEach(player => {
     const skillLevel = getPlayerSkillLevel(player.rating);
-    skillGroups[skillLevel.key].push(player);
+    if (skillGroups[skillLevel.key]) {
+      skillGroups[skillLevel.key].push(player);
+    }
   });
 
   console.log('\n=== SKILL LEVEL DISTRIBUTION ===');
@@ -151,23 +150,35 @@ const separatePlayersBySkill = (players, minPlayersPerLevel = 4) => {
   });
 
   // Smart bumping for isolated players
-  const processedGroups = {};
   const bumpedPlayers = [];
+  const levelKeys = Object.keys(SKILL_LEVELS);
 
-  Object.entries(skillGroups).forEach(([levelKey, playerGroup]) => {
-    if (playerGroup.length < minPlayersPerLevel && playerGroup.length > 0) {
-      // Need to bump these players to the next level up
-      const targetLevel = getNextHigherLevel(levelKey);
-      if (targetLevel) {
-        console.log(`BUMPING UP: ${playerGroup.map(p => p.name).join(', ')} from ${SKILL_LEVELS[levelKey].label} to ${SKILL_LEVELS[targetLevel].label} (insufficient players)`);
+  // Process from lowest to highest level
+  for (let i = 0; i < levelKeys.length; i++) {
+    const levelKey = levelKeys[i];
+    const playerGroup = skillGroups[levelKey];
+    
+    if (playerGroup.length > 0 && playerGroup.length < minPlayersPerLevel) {
+      // Find next non-empty level
+      let targetLevelIndex = i + 1;
+      while (targetLevelIndex < levelKeys.length && skillGroups[levelKeys[targetLevelIndex]].length === 0) {
+        targetLevelIndex++;
+      }
+      
+      if (targetLevelIndex < levelKeys.length) {
+        const targetLevel = levelKeys[targetLevelIndex];
+        console.log(`BUMPING UP: ${playerGroup.map(p => p.name).join(', ')} from ${SKILL_LEVELS[levelKey].label} to ${SKILL_LEVELS[targetLevel].label}`);
+        
         skillGroups[targetLevel].push(...playerGroup);
         bumpedPlayers.push(...playerGroup.map(p => ({ ...p, originalLevel: levelKey, bumpedLevel: targetLevel })));
-        skillGroups[levelKey] = []; // clear the original level
+        skillGroups[levelKey] = [];
+      } else {
+        console.log(`Cannot bump ${playerGroup.map(p => p.name).join(', ')} - already at highest level with players`);
       }
     }
-  });
+  }
 
-  // Filter out empty groups and return organized groups
+  // Build final groups
   const finalGroups = [];
   Object.entries(skillGroups).forEach(([levelKey, playerGroup]) => {
     if (playerGroup.length >= minPlayersPerLevel) {
@@ -190,35 +201,27 @@ const separatePlayersBySkill = (players, minPlayersPerLevel = 4) => {
   return { groups: finalGroups, bumpedPlayers };
 };
 
-const getNextHigherLevel = (currentLevel) => {
-  const levels = Object.keys(SKILL_LEVELS);
-  const currentIndex = levels.indexOf(currentLevel);
-  return currentIndex < levels.length - 1 ? levels[currentIndex + 1] : null;
-};
-
 const canPlayTogether = (player1, player2) => {
   const level1 = getPlayerSkillLevel(player1.rating);
   const level2 = getPlayerSkillLevel(player2.rating);
   
-  // Allow adjacent skill levels to play together if needed
   const level1Index = Object.keys(SKILL_LEVELS).indexOf(level1.key);
   const level2Index = Object.keys(SKILL_LEVELS).indexOf(level2.key);
   
-  return Math.abs(level1Index - level2Index) <= 1; // Same level or adjacent levels
+  return Math.abs(level1Index - level2Index) <= 1;
 };
 
 /* =====================  ENHANCED FAIR ROTATION SCHEDULING  ===================== */
 
-// GENERATE SINGLE ROUND with dynamic player management and advanced skill separation
-const generateSingleRound = (presentPlayers, courts, playerStats, currentRoundIndex, separateBySkill = true) => {
-  console.log(`\n=== GENERATING ROUND ${currentRoundIndex + 1} ===`);
-  console.log(`Present players: ${presentPlayers.length}`);
+// Initialize or update player stats
+const initializePlayerStats = (playerStats, presentPlayers) => {
+  const updatedStats = { ...playerStats };
   
-  // Initialize stats for new players who joined mid-event
+  // Add new players
   presentPlayers.forEach(p => {
-    if (!playerStats[p.id]) {
-      console.log(`NEW PLAYER JOINED: ${p.name} (${p.rating})`);
-      playerStats[p.id] = {
+    if (!updatedStats[p.id]) {
+      console.log(`NEW PLAYER ADDED: ${p.name} (${p.rating})`);
+      updatedStats[p.id] = {
         player: p,
         roundsPlayed: 0,
         roundsSatOut: 0,
@@ -227,43 +230,43 @@ const generateSingleRound = (presentPlayers, courts, playerStats, currentRoundIn
         opponents: new Map()
       };
     } else {
-      // Update player object in case rating/name changed
-      playerStats[p.id].player = p;
+      // Update player info (rating might have changed)
+      updatedStats[p.id].player = p;
     }
   });
+  
+  return updatedStats;
+};
 
-  // Remove stats for players who left
-  const presentPlayerIds = new Set(presentPlayers.map(p => p.id));
-  Object.keys(playerStats).forEach(playerId => {
-    if (!presentPlayerIds.has(playerId)) {
-      console.log(`PLAYER LEFT: ${playerStats[playerId].player.name}`);
-      delete playerStats[playerId];
-    }
-  });
-
+// GENERATE SINGLE ROUND
+const generateSingleRound = (presentPlayers, courts, playerStats, currentRoundIndex, separateBySkill = true) => {
+  console.log(`\n=== GENERATING ROUND ${currentRoundIndex + 1} ===`);
+  console.log(`Present players: ${presentPlayers.length}`);
+  
+  // Initialize/update stats
+  const updatedStats = initializePlayerStats(playerStats, presentPlayers);
+  
   let matches = [];
   
   if (separateBySkill && presentPlayers.length >= 8) {
-    // Use advanced skill separation system
     const { groups: skillGroups, bumpedPlayers } = separatePlayersBySkill(presentPlayers, 4);
     
     if (bumpedPlayers.length > 0) {
-      console.log(`Players bumped up due to insufficient numbers: ${bumpedPlayers.map(p => `${p.name} (${SKILL_LEVELS[p.originalLevel].label} → ${SKILL_LEVELS[p.bumpedLevel].label})`).join(', ')}`);
+      console.log(`Players bumped: ${bumpedPlayers.map(p => `${p.name}`).join(', ')}`);
     }
     
     let courtIndex = 1;
     const courtsPerGroup = Math.floor(courts / Math.max(1, skillGroups.length));
     let extraCourts = courts % Math.max(1, skillGroups.length);
     
-    // Generate matches for each skill group
-    skillGroups.forEach((skillGroup, groupIndex) => {
+    skillGroups.forEach((skillGroup) => {
       if (skillGroup.players.length >= 4) {
         const groupCourts = courtsPerGroup + (extraCourts > 0 ? 1 : 0);
         if (extraCourts > 0) extraCourts--;
         
         const groupMatches = generateMatchesForGroup(
           skillGroup.players, 
-          playerStats, 
+          updatedStats, 
           groupCourts, 
           courtIndex, 
           currentRoundIndex, 
@@ -275,17 +278,19 @@ const generateSingleRound = (presentPlayers, courts, playerStats, currentRoundIn
     });
     
   } else {
-    // No skill separation or not enough players - use original algorithm
-    matches = generateMatchesForGroup(presentPlayers, playerStats, courts, 1, currentRoundIndex, 'Mixed');
+    matches = generateMatchesForGroup(presentPlayers, updatedStats, courts, 1, currentRoundIndex, 'Mixed');
   }
 
-  // Update player statistics
-  updatePlayerStatsForRound(playerStats, presentPlayers, matches, currentRoundIndex);
+  // Update stats for this round
+  updatePlayerStatsForRound(updatedStats, presentPlayers, matches, currentRoundIndex);
+  
+  // Update the original playerStats object
+  Object.assign(playerStats, updatedStats);
   
   return matches;
 };
 
-// Generate matches for a specific group of players
+// Generate matches for a group
 const generateMatchesForGroup = (groupPlayers, playerStats, maxCourts, startingCourtIndex, roundIndex, groupType) => {
   console.log(`Generating ${groupType} matches for ${groupPlayers.length} players`);
   
@@ -298,45 +303,43 @@ const generateMatchesForGroup = (groupPlayers, playerStats, maxCourts, startingC
   return createBalancedMatches(playersThisRound, playerStats, maxCourts, startingCourtIndex, roundIndex, groupType);
 };
 
-// SELECT PLAYERS FOR ROUND (Priority-based fair rotation)
+// Select players for round (priority-based)
 const selectPlayersForRound = (allPlayers, playerStats, maxPlayers, roundIdx) => {
   if (allPlayers.length <= maxPlayers) {
-    return [...allPlayers]; // Everyone plays if we have room
+    return [...allPlayers];
   }
   
-  // Calculate priority for each player
   const playerPriority = allPlayers.map(p => {
-    const stats = playerStats[p.id];
+    const stats = playerStats[p.id] || { roundsPlayed: 0, roundsSatOut: 0, lastPlayedRound: -1 };
     let priority = 0;
     
-    // PRIORITY FACTOR 1: Rounds sat out (highest weight)
+    // High priority for sitting out
     priority += stats.roundsSatOut * 100;
     
-    // PRIORITY FACTOR 2: Rounds since last played
+    // Rounds since last played
     if (stats.lastPlayedRound >= 0) {
-      const roundsSinceLastPlayed = roundIdx - stats.lastPlayedRound;
-      priority += roundsSinceLastPlayed * 50;
+      priority += (roundIdx - stats.lastPlayedRound) * 50;
+    } else {
+      priority += 200; // Never played
     }
     
-    // PRIORITY FACTOR 3: Total rounds played (catch-up factor)
+    // Catch-up factor
     const avgRoundsPlayed = roundIdx > 0 ? 
-      Object.values(playerStats).reduce((sum, s) => sum + s.roundsPlayed, 0) / Object.keys(playerStats).length : 0;
+      Object.values(playerStats).reduce((sum, s) => sum + (s.roundsPlayed || 0), 0) / Object.keys(playerStats).length : 0;
     priority += (avgRoundsPlayed - stats.roundsPlayed) * 30;
     
-    // PRIORITY FACTOR 4: Small random factor for tie-breaking
     priority += Math.random() * 5;
     
     return { player: p, priority, stats };
   });
   
-  // Sort by priority (highest first) and take top players
   return playerPriority
     .sort((a, b) => b.priority - a.priority)
     .slice(0, maxPlayers)
     .map(item => item.player);
 };
 
-// CREATE BALANCED MATCHES from selected players
+// Create balanced matches
 const createBalancedMatches = (playersThisRound, playerStats, maxCourts, startingCourtIndex, roundIdx, groupType) => {
   const matches = [];
   const usedPlayers = new Set();
@@ -347,17 +350,13 @@ const createBalancedMatches = (playersThisRound, playerStats, maxCourts, startin
     const remaining = availablePlayers.filter(p => !usedPlayers.has(p.id));
     if (remaining.length < 4) break;
     
-    // Find best group of 4 players
     const group = selectBestGroupOfFour(remaining, playerStats);
     if (!group || group.length < 4) break;
     
-    // Split group into most balanced teams
     const teamSplit = findBestTeamSplit(group, playerStats);
     
-    // Mark these players as used
     group.forEach(p => usedPlayers.add(p.id));
     
-    // Create match object
     matches.push({
       id: uid(),
       court: startingCourtIndex + courtIdx,
@@ -375,13 +374,12 @@ const createBalancedMatches = (playersThisRound, playerStats, maxCourts, startin
   return matches;
 };
 
-// SELECT BEST GROUP OF 4 from available players
+// Select best group of 4
 const selectBestGroupOfFour = (availablePlayers, playerStats) => {
   if (availablePlayers.length <= 4) {
     return availablePlayers;
   }
   
-  // For larger groups, try to find optimal combination
   let bestGroup = null;
   let bestScore = Infinity;
   const attempts = Math.min(20, availablePlayers.length);
@@ -390,34 +388,28 @@ const selectBestGroupOfFour = (availablePlayers, playerStats) => {
     const group = [];
     const candidates = [...availablePlayers];
     
-    // Select 4 players prioritizing variety in partnerships
     while (group.length < 4 && candidates.length > 0) {
       if (group.length === 0) {
-        // First player: random selection
         const idx = Math.floor(Math.random() * candidates.length);
         group.push(candidates.splice(idx, 1)[0]);
       } else {
-        // Subsequent players: prefer those who haven't played together much
         const scores = candidates.map(candidate => {
           let varietyScore = 0;
           
-          // Check partnership history with already selected players
           group.forEach(existing => {
-            const timesAsTeammates = playerStats[existing.id].teammates.get(candidate.id) || 0;
-            varietyScore += Math.max(0, 5 - timesAsTeammates); // Prefer fewer previous partnerships
+            const stats = playerStats[existing.id] || { teammates: new Map() };
+            const timesAsTeammates = stats.teammates.get(candidate.id) || 0;
+            varietyScore += Math.max(0, 5 - timesAsTeammates);
           });
           
-          // Skill compatibility bonus (prefer players who can play together)
           const skillCompatible = group.every(existing => canPlayTogether(existing, candidate));
           if (skillCompatible) varietyScore += 2;
           
-          // Add randomness for tie-breaking
           varietyScore += Math.random() * 2;
           
           return { player: candidate, score: varietyScore };
         });
         
-        // Pick from top candidates
         scores.sort((a, b) => b.score - a.score);
         const topCandidates = Math.min(3, scores.length);
         const chosenIdx = Math.floor(Math.random() * topCandidates);
@@ -440,42 +432,39 @@ const selectBestGroupOfFour = (availablePlayers, playerStats) => {
   return bestGroup || availablePlayers.slice(0, 4);
 };
 
-// EVALUATE GROUP QUALITY (lower score = better group)
+// Evaluate group quality
 const evaluateGroupQuality = (group, playerStats) => {
   let penalty = 0;
   
-  // Rating spread penalty
   const ratings = group.map(p => p.rating).sort((a, b) => b - a);
   const ratingSpread = ratings[0] - ratings[ratings.length - 1];
   penalty += ratingSpread * 2;
   
-  // Partnership repetition penalty
   for (let i = 0; i < group.length; i++) {
     for (let j = i + 1; j < group.length; j++) {
-      const timesAsTeammates = playerStats[group[i].id].teammates.get(group[j].id) || 0;
-      penalty += timesAsTeammates * 10; // Heavy penalty for repeated partnerships
+      const stats = playerStats[group[i].id] || { teammates: new Map() };
+      const timesAsTeammates = stats.teammates.get(group[j].id) || 0;
+      penalty += timesAsTeammates * 10;
     }
   }
   
-  // Skill level mixing penalty (prefer same skill levels)
   const skillLevels = group.map(p => getPlayerSkillLevel(p.rating).key);
   const uniqueSkillLevels = new Set(skillLevels).size;
   if (uniqueSkillLevels > 1) {
-    // Check if they're adjacent levels (which is acceptable)
     const levelIndices = skillLevels.map(level => Object.keys(SKILL_LEVELS).indexOf(level));
     const minIndex = Math.min(...levelIndices);
     const maxIndex = Math.max(...levelIndices);
     if (maxIndex - minIndex > 1) {
-      penalty += 25; // Heavy penalty for non-adjacent skill mixing
+      penalty += 25;
     } else {
-      penalty += 5; // Light penalty for adjacent skill mixing
+      penalty += 5;
     }
   }
   
   return penalty;
 };
 
-// FIND BEST TEAM SPLIT for group of 4 players
+// Find best team split
 const findBestTeamSplit = (group, playerStats) => {
   const [p1, p2, p3, p4] = group;
   
@@ -491,24 +480,23 @@ const findBestTeamSplit = (group, playerStats) => {
   splitOptions.forEach(split => {
     let score = 0;
     
-    // Team balance penalty (rating difference)
     const avg1 = avg(split.team1);
     const avg2 = avg(split.team2);
     score += Math.abs(avg1 - avg2) * 10;
     
-    // Partnership repetition penalty
-    const team1History = playerStats[split.team1[0].id].teammates.get(split.team1[1].id) || 0;
-    const team2History = playerStats[split.team2[0].id].teammates.get(split.team2[1].id) || 0;
+    const stats1 = playerStats[split.team1[0].id] || { teammates: new Map() };
+    const stats2 = playerStats[split.team2[0].id] || { teammates: new Map() };
+    const team1History = stats1.teammates.get(split.team1[1].id) || 0;
+    const team2History = stats2.teammates.get(split.team2[1].id) || 0;
     score += (team1History + team2History) * 15;
     
-    // Skill level compatibility bonus
     const level1 = getPlayerSkillLevel(split.team1[0].rating);
     const level2 = getPlayerSkillLevel(split.team1[1].rating);
     const level3 = getPlayerSkillLevel(split.team2[0].rating);
     const level4 = getPlayerSkillLevel(split.team2[1].rating);
     
-    if (level1.key === level2.key) score -= 3; // Bonus for same skill level teammates
-    if (level3.key === level4.key) score -= 3; // Bonus for same skill level teammates
+    if (level1.key === level2.key) score -= 3;
+    if (level3.key === level4.key) score -= 3;
     
     if (score < bestScore) {
       bestScore = score;
@@ -519,17 +507,15 @@ const findBestTeamSplit = (group, playerStats) => {
   return bestSplit;
 };
 
-// UPDATE PLAYER STATISTICS after round completion
+// Update player stats for round
 const updatePlayerStatsForRound = (playerStats, presentPlayers, matches, roundIdx) => {
   const playingIds = new Set();
   
-  // Collect all players who are playing this round
   matches.forEach(match => {
     if (match.team1) match.team1.forEach(p => playingIds.add(p.id));
     if (match.team2) match.team2.forEach(p => playingIds.add(p.id));
   });
   
-  // Update play/sit statistics for all present players
   presentPlayers.forEach(player => {
     const stats = playerStats[player.id];
     if (playingIds.has(player.id)) {
@@ -540,11 +526,9 @@ const updatePlayerStatsForRound = (playerStats, presentPlayers, matches, roundId
     }
   });
   
-  // Update partnership and opponent history
   matches.forEach(match => {
     const { team1, team2 } = match;
     
-    // Record teammates
     if (team1?.length === 2) {
       const [p1, p2] = team1;
       playerStats[p1.id].teammates.set(p2.id, (playerStats[p1.id].teammates.get(p2.id) || 0) + 1);
@@ -557,61 +541,37 @@ const updatePlayerStatsForRound = (playerStats, presentPlayers, matches, roundId
       playerStats[p2.id].teammates.set(p1.id, (playerStats[p2.id].teammates.get(p1.id) || 0) + 1);
     }
     
-    // Record opponents
     team1?.forEach(p1 => {
       team2?.forEach(p2 => {
         playerStats[p1.id].opponents.set(p2.id, (playerStats[p1.id].opponents.get(p2.id) || 0) + 1);
-        playerStats[p2.id].opponents.set(p1.id, (playerStats[p2.id].opponents.get(p1.id) || 0) + 1);
+        playerStats[p2.id].opponents.set(p1.id, (playerStats[p2.id].opponents.set(p1.id) || 0) + 1);
       });
     });
   });
 };
 
-/* =====================  LEGACY SCHEDULING (for other tournament types)  ===================== */
-// [Keep all the existing legacy functions for single elim, swiss, etc...]
-const teamSplitScore = (t1, t2, map) => {
-  const tKey = (a, b) => [a.id, b.id].sort().join('-');
-  const rep = (map.get(tKey(t1[0], t1[1])) || 0 ? 10 : 0) + (map.get(tKey(t2[0], t2[1])) || 0 ? 10 : 0);
-  const diff = Math.abs(avg(t1) - avg(t2));
-  const spread = Math.max(Math.abs(t1[0].rating - t1[1].rating), Math.abs(t2[0].rating - t2[1].rating));
-  return rep + diff + (spread > 1 ? 0.5 * spread : 0);
-};
-
 /* =====================  MAIN COMPONENT  ===================== */
 const PickleballTournamentManager = () => {
-  /* ---------- Players ---------- */
   const [players, setPlayers] = useState([]);
   const [form, setForm] = useState({ name: '', rating: '', gender: 'male' });
   const [bulkText, setBulkText] = useState('');
-
-  /* tiny success toast for single add */
   const [addNote, setAddNote] = useState(null);
 
-  /* ---------- Session ---------- */
   const [courts, setCourts] = useState(4);
   const [sessionMinutes, setSessionMinutes] = useState(120);
   const [minutesPerRound, setMinutesPerRound] = useState(20);
-  const totalRounds = Math.max(1, Math.floor(sessionMinutes / minutesPerRound));
 
-  /* ---------- Tournament ---------- */
   const [tournamentType, setTournamentType] = useState('round_robin');
   const [separateBySkill, setSeparateBySkill] = useState(true);
 
-  /* ---------- Schedule ---------- */
   const [rounds, setRounds] = useState([]);
   const [currentRound, setCurrentRound] = useState(0);
   const [playerStats, setPlayerStats] = useState({});
 
-  /* ---------- UI ---------- */
   const [tab, setTab] = useState('setup');
   const [endOpen, setEndOpen] = useState(false);
   const [exportedThisSession, setExportedThisSession] = useState(false);
-  const [canRestore, setCanRestore] = useState(false);
   const [locked, setLocked] = useState(false);
-
-  /* ---------- Records / Brackets ---------- */
-  const [teamRecords, setTeamRecords] = useState({});
-  const [bracketLinks, setBracketLinks] = useState({});
 
   /* ---------- Load + persist ---------- */
   useEffect(() => {
@@ -619,7 +579,6 @@ const PickleballTournamentManager = () => {
     if (savedRoster) {
       try { setPlayers(JSON.parse(savedRoster)); } catch {}
     }
-    setCanRestore(!!localStorage.getItem('pb_session'));
   }, []);
 
   useEffect(() => {
@@ -628,14 +587,13 @@ const PickleballTournamentManager = () => {
 
   useEffect(() => {
     const snapshot = {
-      players, rounds, teamRecords, bracketLinks, playerStats, currentRound,
+      players, rounds, playerStats, currentRound,
       meta: { courts, sessionMinutes, minutesPerRound, tournamentType, separateBySkill, ts: Date.now() },
       locked
     };
     localStorage.setItem('pb_session', JSON.stringify(snapshot));
-  }, [players, rounds, teamRecords, bracketLinks, playerStats, currentRound, courts, sessionMinutes, minutesPerRound, tournamentType, separateBySkill, locked]);
+  }, [players, rounds, playerStats, currentRound, courts, sessionMinutes, minutesPerRound, tournamentType, separateBySkill, locked]);
 
-  /* ---------- Leave-page guard ---------- */
   useEffect(() => {
     const handler = (e) => {
       if (!rounds.length || exportedThisSession) return;
@@ -654,10 +612,11 @@ const PickleballTournamentManager = () => {
     const rating = Number(form.rating);
     if (!name) return alert('Name is required');
     if (Number.isNaN(rating) || rating < 2.0 || rating > 5.5) return alert('Enter DUPR 2.0 – 5.5');
+    
     setPlayers((prev) => [...prev, { id: uid(), name, rating, gender: form.gender, present: true }]);
     setForm({ name: '', rating: '', gender: 'male' });
 
-    setAddNote(`Added ${name} — check Roster`);
+    setAddNote(`Added ${name} – check Roster`);
     setTimeout(() => setAddNote(null), 2000);
   };
 
@@ -665,7 +624,7 @@ const PickleballTournamentManager = () => {
     const player = players.find(p => p.id === id);
     if (rounds.length > 0 && player) {
       const confirmRemove = window.confirm(
-        `Remove ${player.name} from the event? This will affect future round generation but won't change completed rounds.`
+        `Remove ${player.name}? Their stats will be preserved for reporting.`
       );
       if (!confirmRemove) return;
     }
@@ -677,7 +636,7 @@ const PickleballTournamentManager = () => {
     if (rounds.length > 0 && player) {
       const action = player.present ? 'mark as absent' : 'mark as present';
       const confirmToggle = window.confirm(
-        `${action.charAt(0).toUpperCase() + action.slice(1)} ${player.name}? This will affect future round generation.`
+        `${action.charAt(0).toUpperCase() + action.slice(1)} ${player.name}? This will affect future rounds.`
       );
       if (!confirmToggle) return;
     }
@@ -716,7 +675,6 @@ const PickleballTournamentManager = () => {
       return alert('Dynamic round generation only supports Round Robin and King of Court currently');
     }
 
-    // Generate the next round
     const newRound = generateSingleRound(presentPlayers, courts, playerStats, currentRound, separateBySkill);
     
     setRounds(prev => [...prev, newRound]);
@@ -804,14 +762,12 @@ const PickleballTournamentManager = () => {
   /* =====================  RENDER  ===================== */
   return (
     <div className="min-h-screen bg-brand-light pb-28 sm:pb-24">
-      {/* Top toast for single add */}
       {addNote && (
         <div className="fixed top-2 left-1/2 -translate-x-1/2 z-[120] bg-brand-secondary text-brand-primary px-3 py-2 rounded-xl shadow">
           {addNote}
         </div>
       )}
 
-      {/* Top bar */}
       <div className="sticky top-0 z-30 backdrop-blur bg-brand-white/80 border-b border-brand-gray">
         <div className="mx-auto max-w-7xl px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between">
           <div className="flex items-center gap-2 sm:gap-3">
@@ -820,7 +776,7 @@ const PickleballTournamentManager = () => {
             </div>
             <div>
               <div className="text-base font-semibold text-brand-primary">SmashBoard</div>
-              <div className="text-xs text-brand-gray">Court-aware DUPR scheduling</div>
+              <div className="text-xs text-brand-gray">Dynamic player management</div>
             </div>
           </div>
 
@@ -837,7 +793,6 @@ const PickleballTournamentManager = () => {
           </div>
         </div>
 
-        {/* Tabs */}
         <div className="mx-auto max-w-7xl px-3 sm:px-4">
           <nav className="flex gap-1 overflow-x-auto no-scrollbar snap-x">
             {[
@@ -862,7 +817,6 @@ const PickleballTournamentManager = () => {
         </div>
       </div>
 
-      {/* Content */}
       <div className="mx-auto max-w-7xl px-3 sm:px-4 pt-4 sm:pt-6 space-y-4 sm:space-y-6">
         {tab === 'setup' && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 sm:gap-4">
@@ -876,38 +830,6 @@ const PickleballTournamentManager = () => {
                     max={12}
                     value={courts}
                     onChange={(e) => setCourts(Math.max(1, Number(e.target.value) || 1))}
-                    onBlur={(e) => {
-                      const val = Number(e.target.value);
-                      if (isNaN(val) || val < 1) setCourts(1);
-                    }}
-                    className="w-full h-11 rounded-lg border border-brand-gray px-3 focus:border-brand-secondary focus:ring-brand-secondary"
-                  />
-                </Field>
-                <Field label="Session minutes">
-                  <input
-                    type="number"
-                    min={20}
-                    step={10}
-                    value={sessionMinutes}
-                    onChange={(e) => setSessionMinutes(Math.max(20, Number(e.target.value) || 20))}
-                    onBlur={(e) => {
-                      const val = Number(e.target.value);
-                      if (isNaN(val) || val < 20) setSessionMinutes(120);
-                    }}
-                    className="w-full h-11 rounded-lg border border-brand-gray px-3 focus:border-brand-secondary focus:ring-brand-secondary"
-                  />
-                </Field>
-                <Field label="Minutes per round" hint="For dynamic rounds, this is just for reference">
-                  <input
-                    type="number"
-                    min={10}
-                    step={5}
-                    value={minutesPerRound}
-                    onChange={(e) => setMinutesPerRound(Math.max(10, Number(e.target.value) || 10))}
-                    onBlur={(e) => {
-                      const val = Number(e.target.value);
-                      if (isNaN(val) || val < 10) setMinutesPerRound(20);
-                    }}
                     className="w-full h-11 rounded-lg border border-brand-gray px-3 focus:border-brand-secondary focus:ring-brand-secondary"
                   />
                 </Field>
@@ -919,9 +841,6 @@ const PickleballTournamentManager = () => {
                   >
                     <option value="round_robin">Round Robin (Dynamic)</option>
                     <option value="king_of_court">King of Court (Dynamic)</option>
-                    <option value="single_elim">Single Elim (Static)</option>
-                    <option value="swiss">Swiss (Static)</option>
-                    <option value="pool_bracket">Pool → Bracket (Static)</option>
                   </select>
                 </Field>
                 <Field label="Skill separation">
@@ -931,19 +850,10 @@ const PickleballTournamentManager = () => {
                       checked={separateBySkill}
                       onChange={(e) => setSeparateBySkill(e.target.checked)}
                     />
-                    <span className="text-sm">Separate by skill levels (2.5-5.5+)</span>
+                    <span className="text-sm">Separate by skill levels</span>
                   </label>
                   <div className="mt-2 text-xs text-brand-primary/70">
-                    <div className="grid grid-cols-2 gap-1">
-                      <span>2.5: Beginner</span>
-                      <span>3.0: Adv Beginner</span>
-                      <span>3.5: Intermediate</span>
-                      <span>4.0: Adv Intermediate</span>
-                      <span>4.5: Advanced</span>
-                      <span>5.0: Expert</span>
-                      <span className="col-span-2">5.5+: Expert Pro</span>
-                    </div>
-                    <p className="mt-1 italic">Players in small groups (&lt;4) auto-bump to next level</p>
+                    <p className="italic">Players auto-balance across skill groups</p>
                   </div>
                 </Field>
               </div>
@@ -964,6 +874,15 @@ const PickleballTournamentManager = () => {
                   </Button>
                 )}
               </div>
+              
+              {rounds.length > 0 && (
+                <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="text-xs text-blue-800">
+                    ✓ <strong>Late arrivals/departures handled automatically</strong><br/>
+                    Simply check/uncheck "Present" and generate the next round!
+                  </div>
+                </div>
+              )}
             </Card>
 
             <Card className="md:col-span-2">
@@ -998,33 +917,16 @@ const PickleballTournamentManager = () => {
                 </Button>
               </div>
 
-              {/* Bulk add section */}
-              <div className="sm:hidden mt-3 mb-24">
-                <div className="text-sm text-brand-primary/80 mb-1">
-                  Bulk add (one per line: <em>Name, Rating, Gender</em>)
-                </div>
-                <textarea
-                  rows={6}
-                  value={bulkText}
-                  onChange={(e) => setBulkText(e.target.value)}
-                  className="w-full rounded-lg border border-brand-gray px-3 py-2 focus:border-brand-secondary focus:ring-brand-secondary"
-                  placeholder={`Jane Doe, 3.2, Female\nJohn Smith, 3.6, M`}
-                />
-                <Button className="mt-2 bg-brand-secondary text-brand-primary hover:bg-brand-secondary/80 w-full" onClick={parseBulk}>
-                  Parse & add
-                </Button>
-              </div>
-
-              <details className="mt-3 hidden sm:block">
+              <details className="mt-3">
                 <summary className="cursor-pointer text-sm text-brand-primary/80">
                   Bulk add (one per line: <em>Name, Rating, Gender</em>)
                 </summary>
-                <div className="mt-2 grid grid-cols-4 gap-3">
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-4 gap-3">
                   <textarea
                     rows={6}
                     value={bulkText}
                     onChange={(e) => setBulkText(e.target.value)}
-                    className="col-span-3 rounded-lg border border-brand-gray px-3 py-2 focus:border-brand-secondary focus:ring-brand-secondary"
+                    className="col-span-1 sm:col-span-3 rounded-lg border border-brand-gray px-3 py-2 focus:border-brand-secondary focus:ring-brand-secondary"
                     placeholder={`Jane Doe, 3.2, Female\nJohn Smith, 3.6, M`}
                   />
                   <div>
@@ -1042,73 +944,24 @@ const PickleballTournamentManager = () => {
           <Card>
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-brand-primary">Roster ({players.length})</h3>
-              <div className="hidden sm:block text-xs text-brand-primary/70">Present: {presentPlayers.length}</div>
+              <div className="text-xs text-brand-primary/70">Present: {presentPlayers.length}</div>
             </div>
             
             {rounds.length > 0 && (
               <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                 <div className="text-sm text-yellow-800">
-                  ⚠️ <strong>Event in Progress:</strong> Changes to player presence will affect future rounds.
+                  ⚠️ <strong>Event in Progress:</strong> You can add/remove players anytime. Stats are preserved!
                 </div>
               </div>
             )}
 
-            {/* Mobile cards */}
-            <div className="mt-2 sm:hidden space-y-2">
-              {players.map((p) => (
-                <div key={p.id} className="rounded-xl border border-brand-gray bg-brand-white p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="font-medium text-brand-primary">{p.name}</div>
-                    <label className="flex items-center gap-2 text-xs">
-                      <span>Present</span>
-                      <input type="checkbox" checked={!!p.present} onChange={() => togglePresent(p.id)} />
-                    </label>
-                  </div>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="2.0"
-                      max="5.5"
-                      value={p.rating}
-                      onChange={(e) => updatePlayerField(p.id, 'rating', Math.max(2.0, Math.min(5.5, Number(e.target.value) || 2.0)))}
-                      onBlur={(e) => {
-                        const val = Number(e.target.value);
-                        if (isNaN(val) || val < 2.0) updatePlayerField(p.id, 'rating', 2.0);
-                        else if (val > 5.5) updatePlayerField(p.id, 'rating', 5.5);
-                      }}
-                      className="h-10 rounded border border-brand-gray px-2"
-                    />
-                    <select
-                      value={p.gender}
-                      onChange={(e) => updatePlayerField(p.id, 'gender', e.target.value)}
-                      className="h-10 rounded border border-brand-gray px-2"
-                    >
-                      <option value="male">Male</option>
-                      <option value="female">Female</option>
-                    </select>
-                  </div>
-                  <div className="mt-2 flex justify-between items-center">
-                    <span className={`text-xs px-2 py-1 rounded ${getPlayerSkillLevel(p.rating).color}`}>
-                      {getPlayerSkillLevel(p.rating).label}
-                    </span>
-                    <button onClick={() => removePlayer(p.id)} className="text-sm text-red-600 hover:underline">
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Desktop table */}
-            <div className="mt-3 overflow-x-auto hidden sm:block">
+            <div className="mt-3 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-brand-white">
                   <tr className="text-left">
                     <th className="p-2">Present</th>
                     <th className="p-2">Name</th>
                     <th className="p-2">DUPR</th>
-                    <th className="p-2">Gender</th>
                     <th className="p-2">Skill Level</th>
                     <th className="p-2 w-24"></th>
                   </tr>
@@ -1127,20 +980,9 @@ const PickleballTournamentManager = () => {
                           min="2.0" 
                           max="5.5" 
                           value={p.rating} 
-                          onChange={(e) => updatePlayerField(p.id, 'rating', Math.max(2.0, Math.min(5.5, Number(e.target.value) || 2.0)))}
-                          onBlur={(e) => {
-                            const val = Number(e.target.value);
-                            if (isNaN(val) || val < 2.0) updatePlayerField(p.id, 'rating', 2.0);
-                            else if (val > 5.5) updatePlayerField(p.id, 'rating', 5.5);
-                          }}
+                          onChange={(e) => updatePlayerField(p.id, 'rating', Number(e.target.value))}
                           className="w-24 rounded border border-brand-gray px-2 py-1" 
                         />
-                      </td>
-                      <td className="p-2">
-                        <select value={p.gender} onChange={(e) => updatePlayerField(p.id, 'gender', e.target.value)} className="rounded border border-brand-gray px-2 py-1">
-                          <option value="male">Male</option>
-                          <option value="female">Female</option>
-                        </select>
                       </td>
                       <td className="p-2">
                         <span className={`text-xs px-2 py-1 rounded ${getPlayerSkillLevel(p.rating).color}`}>
@@ -1162,7 +1004,7 @@ const PickleballTournamentManager = () => {
           <Card>
             <h3 className="text-sm font-semibold text-brand-primary mb-3">Player Statistics</h3>
             {Object.keys(playerStats).length === 0 ? (
-              <p className="text-brand-primary/70">No rounds generated yet. Statistics will appear after generating rounds.</p>
+              <p className="text-brand-primary/70">No rounds generated yet.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -1170,9 +1012,8 @@ const PickleballTournamentManager = () => {
                     <tr className="text-left">
                       <th className="p-2">Player</th>
                       <th className="p-2">DUPR</th>
-                      <th className="p-2">Skill Level</th>
-                      <th className="p-2">Rounds Played</th>
-                      <th className="p-2">Rounds Sat Out</th>
+                      <th className="p-2">Played</th>
+                      <th className="p-2">Sat Out</th>
                       <th className="p-2">Status</th>
                     </tr>
                   </thead>
@@ -1181,11 +1022,6 @@ const PickleballTournamentManager = () => {
                       <tr key={p.id} className="border-t border-brand-gray/60">
                         <td className="p-2 font-medium">{p.name}</td>
                         <td className="p-2">{p.rating}</td>
-                        <td className="p-2">
-                          <span className={`text-xs px-2 py-1 rounded ${getPlayerSkillLevel(p.rating).color}`}>
-                            {getPlayerSkillLevel(p.rating).label}
-                          </span>
-                        </td>
                         <td className="p-2">{p.roundsPlayed}</td>
                         <td className="p-2">{p.roundsSatOut}</td>
                         <td className="p-2">
@@ -1209,25 +1045,17 @@ const PickleballTournamentManager = () => {
                 <div className="text-3xl sm:text-4xl mb-2">🗓️</div>
                 <div className="text-base sm:text-lg font-semibold text-brand-primary">No rounds yet</div>
                 <p className="text-sm sm:text-base text-brand-primary/80 mt-1">
-                  Go to <b>Setup</b> and click "Generate Next Round" to start.
+                  Click "Generate Next Round" to start
                 </p>
-                <Button className="mt-3 sm:mt-4 bg-brand-primary text-brand-white hover:bg-brand-primary/90 w-full sm:w-auto" onClick={() => setTab('setup')}>
-                  Open setup
-                </Button>
               </Card>
             )}
 
             {rounds.map((round, rIdx) => (
-              <details key={rIdx} open={rIdx === rounds.length - 1} className="group">
-                <summary className="flex items-center justify-between cursor-pointer select-none">
+              <details key={rIdx} open={rIdx === rounds.length - 1}>
+                <summary className="flex items-center justify-between cursor-pointer">
                   <div className="text-sm sm:text-base font-semibold text-brand-primary">Round {rIdx + 1}</div>
-                  <div className="text-xs sm:text-sm text-brand-primary/70 flex items-center gap-2">
-                    <span>Courts: {round.length}</span>
-                    {separateBySkill && (
-                      <span className="text-xs bg-brand-gray px-2 py-1 rounded">
-                        Skill Separated
-                      </span>
-                    )}
+                  <div className="text-xs sm:text-sm text-brand-primary/70">
+                    Courts: {round.length}
                   </div>
                 </summary>
 
@@ -1250,11 +1078,6 @@ const PickleballTournamentManager = () => {
                             {m.skillLevel}
                           </span>
                         )}
-                        {m.winner && (
-                          <span className="rounded-full bg-brand-gray px-2 py-0.5 text-brand-primary">
-                            {m.winner === 'team1' ? 'Team 1 won' : 'Team 2 won'}
-                          </span>
-                        )}
                       </div>
 
                       <div className="text-[11px] sm:text-xs font-medium text-brand-primary/70">Court {m.court}</div>
@@ -1273,42 +1096,40 @@ const PickleballTournamentManager = () => {
                         </div>
                       </div>
 
-                      {m.status !== 'bye' && (
-                        <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2">
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min={0}
-                              value={m.score1 === '' ? '' : m.score1 ?? ''}
-                              onChange={(e) => updateScore(rIdx, i, 'score1', e.target.value)}
-                              className="w-20 h-10 rounded border border-brand-gray px-2"
-                            />
-                            <span className="text-brand-primary">–</span>
-                            <input
-                              type="number"
-                              min={0}
-                              value={m.score2 === '' ? '' : m.score2 ?? ''}
-                              onChange={(e) => updateScore(rIdx, i, 'score2', e.target.value)}
-                              className="w-20 h-10 rounded border border-brand-gray px-2"
-                            />
-                          </div>
-
-                          {m.status !== 'completed' ? (
-                            <div className="grid grid-cols-2 gap-2 sm:flex">
-                              <Button className="bg-brand-secondary text-brand-primary hover:bg-brand-secondary/80 w-full sm:w-auto" onClick={() => quickWin(rIdx, i, 1)}>
-                                Team 1 wins
-                              </Button>
-                              <Button className="bg-brand-secondary text-brand-primary hover:bg-brand-secondary/80 w-full sm:w-auto" onClick={() => quickWin(rIdx, i, 2)}>
-                                Team 2 wins
-                              </Button>
-                            </div>
-                          ) : (
-                            <span className="text-xs px-2 py-1 rounded bg-brand-gray text-brand-primary self-start">
-                              Completed
-                            </span>
-                          )}
+                      <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={0}
+                            value={m.score1 === '' ? '' : m.score1 ?? ''}
+                            onChange={(e) => updateScore(rIdx, i, 'score1', e.target.value)}
+                            className="w-20 h-10 rounded border border-brand-gray px-2"
+                          />
+                          <span className="text-brand-primary">–</span>
+                          <input
+                            type="number"
+                            min={0}
+                            value={m.score2 === '' ? '' : m.score2 ?? ''}
+                            onChange={(e) => updateScore(rIdx, i, 'score2', e.target.value)}
+                            className="w-20 h-10 rounded border border-brand-gray px-2"
+                          />
                         </div>
-                      )}
+
+                        {m.status !== 'completed' ? (
+                          <div className="grid grid-cols-2 gap-2 sm:flex">
+                            <Button className="bg-brand-secondary text-brand-primary hover:bg-brand-secondary/80 w-full sm:w-auto" onClick={() => quickWin(rIdx, i, 1)}>
+                              Team 1 wins
+                            </Button>
+                            <Button className="bg-brand-secondary text-brand-primary hover:bg-brand-secondary/80 w-full sm:w-auto" onClick={() => quickWin(rIdx, i, 2)}>
+                              Team 2 wins
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-xs px-2 py-1 rounded bg-brand-gray text-brand-primary">
+                            Completed
+                          </span>
+                        )}
+                      </div>
                     </Card>
                   ))}
                 </div>
@@ -1318,25 +1139,17 @@ const PickleballTournamentManager = () => {
         )}
       </div>
 
-      {/* Bottom action bar */}
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-brand-gray bg-brand-white/95 backdrop-blur">
         <div className="mx-auto max-w-7xl px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-3 text-sm">
           <div className="hidden sm:flex flex-wrap items-center gap-2 text-brand-primary">
             <span className="rounded-full bg-brand-gray px-3 py-1">Present <b>{presentPlayers.length}</b></span>
-            <span className="rounded-full bg-brand-gray px-3 py-1">Courts <b>{courts}</b></span>
             <span className="rounded-full bg-brand-gray px-3 py-1">Round <b>{currentRound}</b></span>
-            {separateBySkill && (
-              <span className="rounded-full bg-blue-100 text-blue-700 px-3 py-1">Skill Separated</span>
-            )}
           </div>
           <div className="w-full sm:w-auto">
             <div className="grid grid-cols-1 sm:flex gap-2">
               <InstallPrompt className="w-full sm:w-auto" />
               <Button className="bg-brand-secondary text-brand-primary hover:bg-brand-secondary/90 w-full sm:w-auto" onClick={() => setEndOpen(true)}>
                 End Session
-              </Button>
-              <Button className="bg-brand-gray text-brand-primary hover:bg-brand-gray/80 w-full sm:w-auto" onClick={() => setTab('roster')}>
-                Roster
               </Button>
               <Button
                 className="bg-brand-primary text-brand-white hover:bg-brand-primary/90 w-full sm:w-auto"
@@ -1350,13 +1163,12 @@ const PickleballTournamentManager = () => {
         </div>
       </div>
 
-      {/* End Session Modal */}
       {endOpen && (
         <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/50">
           <div className="w-full sm:max-w-lg bg-brand-white rounded-t-2xl sm:rounded-2xl p-4 sm:p-5">
             <h3 className="text-base sm:text-lg font-semibold text-brand-primary">Save results</h3>
             <p className="text-sm text-brand-primary/80 mt-1">
-              Download a CSV of today's scores and statistics.
+              Download CSV of scores and statistics
             </p>
 
             <div className="mt-3 space-y-2">
@@ -1369,8 +1181,8 @@ const PickleballTournamentManager = () => {
                   const csv = toCSV(results);
                   const filename = `smashboard-${new Date().toISOString().slice(0, 10)}.csv`;
 
-                  downloadFile(filename, csv);      // local download
-                  await emailCSV(csv, filename);    // silent archive (if configured)
+                  downloadFile(filename, csv);
+                  await emailCSV(csv, filename);
                   setExportedThisSession(true);
                 }}
               >
@@ -1385,25 +1197,18 @@ const PickleballTournamentManager = () => {
               <Button
                 className="bg-brand-primary text-brand-white hover:bg-brand-primary/90 w-full"
                 onClick={() => {
-                  if (!exportedThisSession) {
-                    const confirmLose = window.confirm(
-                      'You have not downloaded the CSV. If you continue, your scores and roster will be cleared and cannot be recovered from this device. Continue?'
-                    );
-                    if (!confirmLose) return;
+                  if (!exportedThisSession && window.confirm('Clear all data? This cannot be undone.')) {
+                    setPlayers([]);
+                    setRounds([]);
+                    setPlayerStats({});
+                    setCurrentRound(0);
+                    setExportedThisSession(false);
+                    setLocked(false);
+                    localStorage.removeItem('pb_session');
+                    localStorage.removeItem('pb_roster');
+                    setEndOpen(false);
+                    setTab('setup');
                   }
-                  // Clear and route to Setup
-                  setPlayers([]);
-                  setRounds([]);
-                  setTeamRecords({});
-                  setBracketLinks({});
-                  setPlayerStats({});
-                  setCurrentRound(0);
-                  setExportedThisSession(false);
-                  setLocked(false);
-                  localStorage.removeItem('pb_session');
-                  localStorage.removeItem('pb_roster');
-                  setEndOpen(false);
-                  setTab('setup');
                 }}
               >
                 End & Clear
