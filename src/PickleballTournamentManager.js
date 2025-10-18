@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import InstallPrompt from './InstallPrompt';
 
-// Version 3.0 - Complete rewrite with dynamic player management
+// Version 3.1 - Fairness improvements + court utilization fixes
 
 /* =====================  BRAND UI PRIMITIVES  ===================== */
 const Button = ({ className = '', ...props }) => (
@@ -238,6 +238,33 @@ const initializePlayerStats = (playerStats, presentPlayers) => {
   return updatedStats;
 };
 
+// FAIRNESS VALIDATION
+const validateFairness = (playerStats, presentPlayers, currentRound) => {
+  if (currentRound === 0) return true;
+  
+  const playStats = presentPlayers.map(p => {
+    const stats = playerStats[p.id] || { roundsPlayed: 0, roundsSatOut: 0 };
+    return {
+      name: p.name,
+      played: stats.roundsPlayed,
+      satOut: stats.roundsSatOut
+    };
+  });
+  
+  const maxSatOut = Math.max(...playStats.map(s => s.satOut));
+  const minSatOut = Math.min(...playStats.map(s => s.satOut));
+  const difference = maxSatOut - minSatOut;
+  
+  // If difference is more than 1 round, something's wrong
+  if (difference > 1) {
+    console.warn('⚠️ FAIRNESS ALERT: Some players have sat out significantly more');
+    console.log('Max sat out:', maxSatOut, 'Min sat out:', minSatOut);
+    console.log('Players sitting out most:', playStats.filter(s => s.satOut === maxSatOut).map(s => s.name));
+  }
+  
+  return difference <= 1;
+};
+
 // GENERATE SINGLE ROUND
 const generateSingleRound = (presentPlayers, courts, playerStats, currentRoundIndex, separateBySkill = true) => {
   console.log(`\n=== GENERATING ROUND ${currentRoundIndex + 1} ===`);
@@ -277,6 +304,38 @@ const generateSingleRound = (presentPlayers, courts, playerStats, currentRoundIn
       }
     });
     
+    // SOLUTION 3: Post-generation court filling
+    if (matches.length < courts) {
+      console.log(`\nOnly using ${matches.length} of ${courts} courts. Checking for remaining players...`);
+      
+      const playingIds = new Set();
+      matches.forEach(match => {
+        if (match.team1) match.team1.forEach(p => playingIds.add(p.id));
+        if (match.team2) match.team2.forEach(p => playingIds.add(p.id));
+      });
+      
+      const remainingPlayers = presentPlayers.filter(p => !playingIds.has(p.id));
+      const remainingCourts = courts - matches.length;
+      
+      if (remainingPlayers.length >= 4 && remainingCourts > 0) {
+        console.log(`✅ Filling ${remainingCourts} extra court(s) with ${remainingPlayers.length} remaining players (Mixed skill overflow)`);
+        
+        const extraMatches = createBalancedMatches(
+          remainingPlayers,
+          updatedStats,
+          remainingCourts,
+          courtIndex,
+          currentRoundIndex,
+          'Mixed (Overflow)'
+        );
+        
+        matches.push(...extraMatches);
+        console.log(`Added ${extraMatches.length} overflow match(es)`);
+      } else if (remainingPlayers.length > 0) {
+        console.log(`Cannot fill remaining courts: only ${remainingPlayers.length} players left (need 4 minimum)`);
+      }
+    }
+    
   } else {
     matches = generateMatchesForGroup(presentPlayers, updatedStats, courts, 1, currentRoundIndex, 'Mixed');
   }
@@ -284,8 +343,23 @@ const generateSingleRound = (presentPlayers, courts, playerStats, currentRoundIn
   // Update stats for this round
   updatePlayerStatsForRound(updatedStats, presentPlayers, matches, currentRoundIndex);
   
+  // FAIRNESS VALIDATION
+  validateFairness(updatedStats, presentPlayers, currentRoundIndex);
+  
   // Update the original playerStats object
   Object.assign(playerStats, updatedStats);
+  
+  // SOLUTION 4: Debug logging
+  console.log(`\n=== ROUND ${currentRoundIndex + 1} SUMMARY ===`);
+  console.log(`Courts requested: ${courts}`);
+  console.log(`Courts used: ${matches.length}`);
+  console.log(`Players present: ${presentPlayers.length}`);
+  console.log(`Players playing: ${matches.reduce((sum, m) => sum + 4, 0)}`);
+  console.log(`Players sitting: ${presentPlayers.length - matches.reduce((sum, m) => sum + 4, 0)}`);
+
+  if (matches.length < courts) {
+    console.warn(`⚠️ WARNING: Only using ${matches.length} of ${courts} courts!`);
+  }
   
   return matches;
 };
@@ -303,7 +377,7 @@ const generateMatchesForGroup = (groupPlayers, playerStats, maxCourts, startingC
   return createBalancedMatches(playersThisRound, playerStats, maxCourts, startingCourtIndex, roundIndex, groupType);
 };
 
-// Select players for round (priority-based)
+// Select players for round (priority-based) - IMPROVED FAIRNESS
 const selectPlayersForRound = (allPlayers, playerStats, maxPlayers, roundIdx) => {
   if (allPlayers.length <= maxPlayers) {
     return [...allPlayers];
@@ -313,22 +387,23 @@ const selectPlayersForRound = (allPlayers, playerStats, maxPlayers, roundIdx) =>
     const stats = playerStats[p.id] || { roundsPlayed: 0, roundsSatOut: 0, lastPlayedRound: -1 };
     let priority = 0;
     
-    // High priority for sitting out
-    priority += stats.roundsSatOut * 100;
+    // MUCH HIGHER priority for sitting out (increased from 100 to 500)
+    priority += stats.roundsSatOut * 500;
     
-    // Rounds since last played
+    // Rounds since last played (increased from 50 to 200)
     if (stats.lastPlayedRound >= 0) {
-      priority += (roundIdx - stats.lastPlayedRound) * 50;
+      priority += (roundIdx - stats.lastPlayedRound) * 200;
     } else {
-      priority += 200; // Never played
+      priority += 1000; // Never played - HIGHEST priority
     }
     
-    // Catch-up factor
+    // Catch-up factor (increased from 30 to 100)
     const avgRoundsPlayed = roundIdx > 0 ? 
       Object.values(playerStats).reduce((sum, s) => sum + (s.roundsPlayed || 0), 0) / Object.keys(playerStats).length : 0;
-    priority += (avgRoundsPlayed - stats.roundsPlayed) * 30;
+    priority += (avgRoundsPlayed - stats.roundsPlayed) * 100;
     
-    priority += Math.random() * 5;
+    // Reduce randomness (changed from 5 to 1)
+    priority += Math.random() * 1;
     
     return { player: p, priority, stats };
   });
@@ -544,7 +619,7 @@ const updatePlayerStatsForRound = (playerStats, presentPlayers, matches, roundId
     team1?.forEach(p1 => {
       team2?.forEach(p2 => {
         playerStats[p1.id].opponents.set(p2.id, (playerStats[p1.id].opponents.get(p2.id) || 0) + 1);
-        playerStats[p2.id].opponents.set(p1.id, (playerStats[p2.id].opponents.set(p1.id) || 0) + 1);
+        playerStats[p2.id].opponents.set(p1.id, (playerStats[p2.id].opponents.get(p1.id) || 0) + 1);
       });
     });
   });
